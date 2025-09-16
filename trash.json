@@ -1,0 +1,16 @@
+[
+  {
+    "user_id": 1,
+    "waste_type": "metal",
+    "amount": 1,
+    "points": 1,
+    "timestamp": "2025-08-17T19:40:57+07:00"
+  },
+  {
+    "user_id": 1,
+    "waste_type": "notmetal",
+    "amount": 1,
+    "points": 1,
+    "timestamp": "2025-08-17T19:40:57+07:00"
+  }
+]
