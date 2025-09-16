@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import psycopg
+import psycopg 
 import altair as alt
 
 DB_HOST     = "192.168.11.154"
