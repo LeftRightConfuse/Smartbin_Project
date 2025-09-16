@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
+import psycopg
 import altair as alt
 
 DB_HOST     = "192.168.11.154"
@@ -22,7 +22,7 @@ st.markdown("""
 
 @st.cache_data(ttl=30)
 def load_data(query: str) -> pd.DataFrame:
-    with psycopg2.connect(
+    with psycopg.connect(
         host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD
     ) as conn:
         df = pd.read_sql_query(query, conn)
