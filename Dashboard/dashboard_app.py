@@ -20,7 +20,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ---------- ใช้ SQLAlchemy engine (หายคำเตือน pandas) ----------
+# ---------- ใช้ SQLAlchemy engine ----------
 ENGINE = create_engine(
     f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     # ถ้าเป็น Supabase ให้ต่อท้าย ?sslmode=require
@@ -57,11 +57,12 @@ icon_layer = alt.Chart(chart_df[chart_df["Icon"] != ""]).mark_text(size=50, dy=-
     x="User:N", y="Points:Q", text="Icon:N"
 )
 
-# ใช้ width แทน use_container_width
-st.altair_chart(base_chart + icon_layer, width='stretch')
+# ทำให้ responsive แบบรองรับทุกเวอร์ชัน
+chart = (base_chart + icon_layer).properties(width='container')
+st.altair_chart(chart, use_container_width=True)
 
 st.subheader("👤 Users Table")
-st.dataframe(chart_df[["User", "Points"]], width='stretch')
+st.dataframe(chart_df[["User", "Points"]], use_container_width=True)
 
 # -------------------- Waste Type Distribution (Pie) --------------------
 st.subheader("🗑️ Waste Type Distribution")
@@ -84,8 +85,8 @@ with col1:
         theta=alt.Theta("TotalAmount:Q", stack=True),
         color=alt.Color("Waste:N", scale=alt.Scale(scheme="greens")),
         tooltip=[alt.Tooltip("Waste:N"), alt.Tooltip("TotalAmount:Q", format=",.2f")]
-    )
-    st.altair_chart(pie, width='stretch')
+    ).properties(width='container')
+    st.altair_chart(pie, use_container_width=True)
 
 with col2:
     st.write("### 📊 % by Type")
@@ -93,4 +94,4 @@ with col2:
 
 # -------------------- Raw Log Table --------------------
 st.subheader("📋 Waste Log")
-st.dataframe(df_log, width='stretch')
+st.dataframe(df_log, use_container_width=True)
