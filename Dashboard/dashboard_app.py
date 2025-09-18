@@ -50,8 +50,10 @@ chart_df["Icon"] = chart_df.index.map(lambda i: icons.get(i, ""))
 
 base_chart = alt.Chart(chart_df).mark_bar().encode(
     x=alt.X("User:N", sort=None, title="User"),
-    y=alt.Y("Points:Q", title="Points")
+    y=alt.Y("Points:Q", title="Points"),
+    color=alt.Color("User:N", scale=alt.Scale(scheme="greens"), legend=None)  # เพิ่มตรงนี้
 )
+
 
 icon_layer = alt.Chart(chart_df[chart_df["Icon"] != ""]).mark_text(size=50, dy=-10).encode(
     x="User:N", y="Points:Q", text="Icon:N"
