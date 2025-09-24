@@ -1,15 +1,11 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-from sqlalchemy import create_engine, text
+from pymongo import MongoClient
+from datetime import datetime
 
-DB_HOST     = "10.10.10.73"
-DB_PORT     = 5432
-DB_NAME     = "smartbin"
-DB_USER     = "postgres"
-DB_PASSWORD = "dG8tclqynj"
-
-st.set_page_config(page_title="Smartbin Dashboard", layout="wide")
+# -------------------- CONFIG --------------------
+st.set_page_config(page_title="Smartbin Dashboard (MongoDB)", layout="wide")
 
 st.markdown("""
     <style>
@@ -18,31 +14,42 @@ st.markdown("""
         h1, h2, h3 { color: #1a7f4d; }
         .stDataFrame { background-color: #ffffff; }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# ---------- ใช้ SQLAlchemy engine ----------
-ENGINE = create_engine(
-    f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    # ถ้าเป็น Supabase ให้ต่อท้าย ?sslmode=require
-    # f".../{DB_NAME}?sslmode=require"
-)
+# -------------------- MongoDB Connection --------------------
+MONGO_URI = st.secrets["MONGO_URI"]
 
-@st.cache_data(ttl=30)
-def load_data(query: str) -> pd.DataFrame:
-    with ENGINE.connect() as conn:
-        return pd.read_sql_query(text(query), conn)
+@st.cache_resource
+def get_client():
+    """สร้าง client แค่ครั้งเดียว แล้ว cache ไว้"""
+    return MongoClient(MONGO_URI)
 
-st.title("♻️ Smartbin Dashboard")
+client = get_client()
+db = client["smart_bin"]
+users_col = db["users"]
+waste_col = db["waste"]
 
-# -------------------- Users (Bar + Icons) --------------------
+st.title("♻️ Smartbin Dashboard (MongoDB Atlas)")
+
+# -------------------- Helper --------------------
+def cursor_to_df(cursor):
+    df = pd.DataFrame(list(cursor))
+    if not df.empty and "_id" in df.columns:
+        df["_id"] = df["_id"].astype(str)
+    return df
+
+# -------------------- Users Leaderboard --------------------
 st.subheader("🏆 Total Points by User")
-chart_df = load_data("SELECT * FROM users")
 
-chart_df["total_points"] = pd.to_numeric(chart_df.get("total_points"), errors="coerce").fillna(0).astype(int)
-chart_df["name"] = chart_df.get("name").astype(str)
-chart_df = (chart_df
-            .rename(columns={"name": "User", "total_points": "Points"})
-            .sort_values(by="Points", ascending=False)
+users_df = cursor_to_df(users_col.find({}, {"_id": 0, "user_id": 1, "name": 1, "points": 1}))
+if users_df.empty:
+    users_df = pd.DataFrame(columns=["user_id", "name", "points"])
+
+users_df["points"] = pd.to_numeric(users_df.get("points"), errors="coerce").fillna(0).astype(int)
+
+chart_df = (users_df
+            .rename(columns={"name": "User", "points": "Points"})
+            .sort_values("Points", ascending=False)
             .reset_index(drop=True))
 
 icons = {0: "👑", 1: "🥈", 2: "🥉"}
@@ -51,37 +58,51 @@ chart_df["Icon"] = chart_df.index.map(lambda i: icons.get(i, ""))
 base_chart = alt.Chart(chart_df).mark_bar().encode(
     x=alt.X("User:N", sort=None, title="User"),
     y=alt.Y("Points:Q", title="Points"),
-    color=alt.Color("User:N", scale=alt.Scale(scheme="greens"), legend=None)  # เพิ่มตรงนี้
+    color=alt.Color("User:N", scale=alt.Scale(scheme="greens"), legend=None)
 )
-
 
 icon_layer = alt.Chart(chart_df[chart_df["Icon"] != ""]).mark_text(size=50, dy=-10).encode(
     x="User:N", y="Points:Q", text="Icon:N"
 )
 
-# ทำให้ responsive แบบรองรับทุกเวอร์ชัน
-chart = (base_chart + icon_layer).properties(width='container')
-st.altair_chart(chart, use_container_width=True)
-
+st.altair_chart((base_chart + icon_layer).properties(width='container'), use_container_width=True)
 st.subheader("👤 Users Table")
 st.dataframe(chart_df[["User", "Points"]], use_container_width=True)
 
-# -------------------- Waste Type Distribution (Pie) --------------------
+# -------------------- Aggregation Example --------------------
+with st.expander("คำนวณแต้มจาก waste (Aggregation)"):
+    pipe_points = [
+        {"$group": {"_id": "$user_id", "total_points": {"$sum": "$points_earned"}}},
+        {"$lookup": {
+            "from": "users",
+            "localField": "_id",
+            "foreignField": "user_id",
+            "as": "user"
+        }},
+        {"$unwind": {"path": "$user", "preserveNullAndEmptyArrays": True}},
+        {"$project": {"user_id": "$_id", "_id": 0, "name": "$user.name", "total_points": 1}}
+    ]
+    agg_df = pd.DataFrame(list(waste_col.aggregate(pipe_points)))
+    if not agg_df.empty:
+        agg_df = agg_df.fillna({"name": "(unknown)"}).sort_values("total_points", ascending=False)
+    st.dataframe(agg_df, use_container_width=True)
+
+# -------------------- Waste Type Distribution --------------------
 st.subheader("🗑️ Waste Type Distribution")
 
-df_log = load_data("SELECT * FROM waste_log ORDER BY timestamp DESC")
-df_log["amount"] = pd.to_numeric(df_log.get("amount"), errors="coerce").fillna(0)
-df_log["waste_type"] = df_log.get("waste_type").astype(str)
+pipe_pie = [
+    {"$group": {"_id": "$waste_type", "TotalAmount": {"$sum": "$weight"}}},
+    {"$project": {"Waste": "$_id", "_id": 0, "TotalAmount": 1}}
+]
+pie_df = pd.DataFrame(list(waste_col.aggregate(pipe_pie)))
+if pie_df.empty:
+    pie_df = pd.DataFrame({"Waste": [], "TotalAmount": []})
 
-pie_df = (df_log.groupby("waste_type", as_index=False)["amount"].sum()
-               .rename(columns={"amount": "TotalAmount", "waste_type": "Waste"}))
-
-total_sum = float(pie_df["TotalAmount"].sum())
+total_sum = float(pie_df["TotalAmount"].sum()) if not pie_df.empty else 0.0
 pie_df["PercentText"] = ("0.0%" if total_sum == 0
-                         else (pie_df["TotalAmount"] / total_sum * 100).round(1).astype(str) + "%")
+                         else (pie_df["TotalAmount"] / max(total_sum, 1e-9) * 100).round(1).astype(str) + "%")
 
 col1, col2 = st.columns([2, 1])
-
 with col1:
     pie = alt.Chart(pie_df).mark_arc().encode(
         theta=alt.Theta("TotalAmount:Q", stack=True),
@@ -89,11 +110,14 @@ with col1:
         tooltip=[alt.Tooltip("Waste:N"), alt.Tooltip("TotalAmount:Q", format=",.2f")]
     ).properties(width='container')
     st.altair_chart(pie, use_container_width=True)
-
 with col2:
     st.write("### 📊 % by Type")
     st.table(pie_df[["Waste", "PercentText"]])
 
-# -------------------- Raw Log Table --------------------
-st.subheader("📋 Waste Log")
-st.dataframe(df_log, use_container_width=True)
+# -------------------- Raw Waste Log --------------------
+st.subheader("📋 Waste Log (latest first)")
+raw_df = cursor_to_df(
+    waste_col.find({}, {"_id": 1, "record_id": 1, "user_id": 1, "waste_type": 1, "weight": 1, "points_earned": 1, "timestamp": 1})
+             .sort("timestamp", -1)
+)
+st.dataframe(raw_df, use_container_width=True)
