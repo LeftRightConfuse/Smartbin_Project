@@ -3,6 +3,7 @@ import pandas as pd
 import altair as alt
 from pymongo import MongoClient
 from datetime import datetime
+from urllib.parse import quote_plus
 
 # -------------------- CONFIG --------------------
 st.set_page_config(page_title="Smartbin Dashboard (MongoDB)", layout="wide")
@@ -17,17 +18,30 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------- MongoDB Connection --------------------
-MONGO_URI = st.secrets["MONGO_URI"]
+# -------------------- MongoDB Connection --------------------
+# อ่านค่าจาก Secrets และประกอบ URI โดย encode รหัสผ่านให้อัตโนมัติ
+user = st.secrets["MONGO_USER"]                 # ชื่อผู้ใช้ Atlas
+pwd  = quote_plus(st.secrets["MONGO_PASS"])     # encode อักขระพิเศษอัตโนมัติ
+host = st.secrets["MONGO_CLUSTER"]              # เช่น cluster0.kfioeaq.mongodb.net
+dbnm = st.secrets.get("MONGO_DB", "smart_bin")  # ชื่อ DB
+
+MONGO_URI = (
+    f"mongodb+srv://{user}:{pwd}@{host}/{dbnm}"
+    "?retryWrites=true&w=majority&appName=SmartbinApp&authSource=admin"
+)
 
 @st.cache_resource
 def get_client():
-    """สร้าง client แค่ครั้งเดียว แล้ว cache ไว้"""
-    return MongoClient(MONGO_URI)
+    c = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    # เช็กว่าเชื่อมต่อและ auth ได้จริง (จะ throw ถ้า IP/รหัส/URI ผิด)
+    c.admin.command("ping")
+    return c
 
 client = get_client()
-db = client["smart_bin"]
+db = client[dbnm]
 users_col = db["users"]
 waste_col = db["waste"]
+
 
 st.title("♻️ Smartbin Dashboard (MongoDB Atlas)")
 
