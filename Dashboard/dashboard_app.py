@@ -203,7 +203,12 @@ with col2:
     st.table(pie_df[["Waste", "PercentText"]])
 
 st.subheader("📋 Daily Waste")
+
 dw_view = dw_df.copy()
-if "date" in dw_view.columns:
-    dw_view["date"] = dw_view["date"].astype(str)
+if not dw_view.empty and "date" in dw_view.columns:
+    dw_view["date"] = pd.to_datetime(dw_view["date"], errors="coerce")
+    dw_view = dw_view.sort_values("date", ascending=False)
+    dw_view["date"] = dw_view["date"].dt.strftime("%Y-%m-%d")
+
 st.dataframe(dw_view, use_container_width=True)
+
