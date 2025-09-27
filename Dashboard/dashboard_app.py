@@ -90,26 +90,53 @@ def load_points_df():
     return df
 
 def load_daily_waste_flat():
+    # อ่านเอกสารเรียงจากใหม่ไปเก่า
     docs = list(daily_col.find({}).sort("timestamp", -1))
     rows = []
+
+    time_keys = ["timestamp", "updated_at", "updatedAt", "created_at", "createdAt", "ts", "time", "date"]
+
     for d in docs:
+        # เวลาของเอกสาร (ใช้ชี้ว่าอันไหนล่าสุด)
+        parent_ts = None
+        for k in time_keys:
+            if d.get(k) is not None:
+                parent_ts = d.get(k)
+                break
+
         data = d.get("data", {}) or {}
         for day_str, obj in data.items():
             rows.append({
-                "date": day_str,
+                "date": day_str,  # YYYY-MM-DD
                 "aluminium_can": float(obj.get("aluminium_can", 0) or 0),
                 "plastic_bottle": float(obj.get("plastic_bottle", 0) or 0),
                 "total": float(obj.get("total", 0) or 0),
+                "ts": parent_ts,
             })
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        try:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return df
 
-st.subheader("🏆 Total Points by User (from smartbin.points)")
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    # มาตรฐานรูปแบบวัน/เวลา
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+
+    # เก็บแค่เรคคอร์ดล่าสุดของแต่ละวัน (เลือก ts มากสุด)
+    if df["ts"].notna().any():
+        idx = df.groupby("date")["ts"].idxmax()
+        df = df.loc[idx]
+    else:
+        # ถ้าไม่มีเวลาเลย ให้คัดซ้ำด้วยลำดับอ่าน (ใหม่→เก่า)
+        df = df.drop_duplicates(subset=["date"], keep="first")
+
+    # เรียงจากวันใหม่ไปเก่า และแสดงวันที่เป็นสตริง
+    df = df.sort_values("date", ascending=False).reset_index(drop=True)
+    df["date"] = df["date"].astype(str)
+
+    # ไม่ต้องโชว์คอลัมน์ ts ในตาราง
+    return df.drop(columns=["ts"], errors="ignore")
+
 
 users_df = load_points_df()
 if not users_df.empty:
@@ -175,6 +202,7 @@ st.dataframe(chart_df[["User", "Points"]], use_container_width=True, hide_index=
 st.subheader("🗑️ Waste Type Distribution (from smartbin.daily_waste)")
 dw_df = load_daily_waste_flat()
 
+# สรุปจำนวนต่อชนิด
 if not dw_df.empty:
     pie_df = pd.DataFrame({
         "Waste": ["aluminium_can", "plastic_bottle"],
@@ -187,25 +215,29 @@ else:
     pie_df = pd.DataFrame({"Waste": [], "TotalAmount": []})
 
 total_sum = float(pie_df["TotalAmount"].sum()) if not pie_df.empty else 0.0
-pie_df["PercentText"] = ("0.0%" if total_sum == 0
-                         else (pie_df["TotalAmount"] / max(total_sum, 1e-9) * 100).round(1).astype(str) + "%")
+pie_df["Percent"] = 0.0 if total_sum == 0 else (pie_df["TotalAmount"] / max(total_sum, 1e-9) * 100)
+pie_df["PercentText"] = pie_df["Percent"].round(1).astype(str) + "%"
+pie_df["Label"] = pie_df.apply(lambda r: f'{int(r["TotalAmount"]):,} ({r["Percent"]:.1f}%)', axis=1)
 
 col1, col2 = st.columns([2, 1])
+
 with col1:
-    pie = alt.Chart(pie_df).mark_arc().encode(
+    base = alt.Chart(pie_df).encode(
         theta=alt.Theta("TotalAmount:Q", stack=True),
-        color=alt.Color("Waste:N", scale=alt.Scale(scheme="greens")),
-        tooltip=[alt.Tooltip("Waste:N"), alt.Tooltip("TotalAmount:Q", format=",.2f")]
-    ).properties(width='container')
-    st.altair_chart(pie, use_container_width=True)
+        color=alt.Color("Waste:N", scale=alt.Scale(scheme="greens"))
+    )
+    pie = base.mark_arc()
+    text = base.mark_text(radius=120, size=14).encode(text="Label:N")   # จำนวน + %
+    st.altair_chart((pie + text).properties(width='container'), use_container_width=True)
+
 with col2:
     st.write("### 📊 % by Type")
-    st.table(pie_df[["Waste", "PercentText"]])
+    table_df = pie_df.copy()
+    table_df["Total"] = table_df["TotalAmount"].astype(int).map(lambda x: f"{x:,}")
+    st.table(table_df[["Waste", "Total", "PercentText"]])
+
 
 st.subheader("📋 Daily Waste")
-dw_view = dw_df.copy()
-if not dw_view.empty and "date" in dw_view.columns:
-    dw_view["date"] = pd.to_datetime(dw_view["date"], errors="coerce")
-    dw_view = dw_view.sort_values("date", ascending=False)
-    dw_view["date"] = dw_view["date"].dt.strftime("%Y-%m-%d")
+dw_view = load_daily_waste_flat()
 st.dataframe(dw_view, use_container_width=True, hide_index=True)
+
