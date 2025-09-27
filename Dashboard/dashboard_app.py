@@ -40,40 +40,38 @@ daily_col  = db["daily_waste"]
 
 st.title("♻️ Smartbin Dashboard (MongoDB Atlas / smartbin)")
 
-def cursor_to_df(cursor):
-    df = pd.DataFrame(list(cursor))
-    if not df.empty and "_id" in df.columns:
-        df["_id"] = df["_id"].astype(str)
-    return df
-
 def load_points_df():
     docs = list(points_col.find({}))
     rows = []
     if not docs:
-        return pd.DataFrame(columns=["user_id", "name", "points"])
-    doc0 = docs[0]
-    looks_like_per_user = ("name" in doc0 and "points" in doc0) or ("user_id" in doc0)
-    if looks_like_per_user:
-        for d in docs:
-            user_id = d.get("user_id") or d.get("_id")
-            name    = d.get("name") or str(user_id)
-            points  = d.get("points", 0)
-            rows.append({"user_id": str(user_id), "name": name, "points": points})
-    else:
-        for d in docs:
-            for k, v in d.items():
-                if k in ("_id",):
-                    continue
-                if isinstance(v, dict) and ("points" in v or "name" in v):
-                    rows.append({
-                        "user_id": k,
-                        "name": v.get("name", k),
-                        "points": v.get("points", 0)
-                    })
+        return pd.DataFrame(columns=["user_id", "name", "points", "ts"])
+
+    time_keys = ["timestamp", "updated_at", "updatedAt", "created_at", "createdAt", "ts", "time", "date"]
+
+    for d in docs:
+        user_id = d.get("user_id") or d.get("_id")
+        name    = d.get("name") or str(user_id)
+        points  = d.get("points", 0)
+
+        ts_val = None
+        for k in time_keys:
+            if k in d and d[k] is not None:
+                ts_val = d[k]
+                break
+
+        rows.append({
+            "user_id": str(user_id),
+            "name": name,
+            "points": points,
+            "ts": ts_val
+        })
+
     df = pd.DataFrame(rows)
     if df.empty:
-        df = pd.DataFrame(columns=["user_id", "name", "points"])
+        return pd.DataFrame(columns=["user_id", "name", "points", "ts"])
+
     df["points"] = pd.to_numeric(df["points"], errors="coerce").fillna(0).astype(int)
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
     return df
 
 def load_daily_waste_flat():
@@ -100,13 +98,20 @@ def load_daily_waste_flat():
 st.subheader("🏆 Total Points by User (from smartbin.points)")
 
 users_df = load_points_df()
-if not users_df.empty:
-    users_df = (users_df
-                .sort_values(["user_id", "points"], ascending=[True, False])
-                .groupby("user_id", as_index=False)
-                .first())
 
-# ตัด Alice ออก (case-insensitive)
+if not users_df.empty:
+    if users_df["ts"].notna().any():
+        users_df = (users_df
+                    .sort_values(["user_id", "ts"], ascending=[True, False])
+                    .groupby("user_id", as_index=False)
+                    .first())
+    else:
+        users_df = (users_df
+                    .sort_values(["user_id", "points"], ascending=[True, False])
+                    .groupby("user_id", as_index=False)
+                    .first())
+
+# filter Alice
 users_df = users_df[~users_df["name"].fillna("").str.strip().str.lower().eq("alice")]
 
 chart_df = (users_df
