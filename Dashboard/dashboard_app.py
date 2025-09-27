@@ -170,7 +170,7 @@ badges = alt.Chart(chart_df[chart_df["Badge"] != ""]).mark_text(
 st.altair_chart((bars + labels + badges).properties(width='container'), use_container_width=True)
 
 st.subheader("👤 Users latest points")
-st.dataframe(chart_df[["User", "Points"]], use_container_width=True)
+st.dataframe(chart_df[["User", "Points"]], use_container_width=True, hide_index=True)
 
 st.subheader("🗑️ Waste Type Distribution (from smartbin.daily_waste)")
 dw_df = load_daily_waste_flat()
@@ -203,12 +203,9 @@ with col2:
     st.table(pie_df[["Waste", "PercentText"]])
 
 st.subheader("📋 Daily Waste")
-
 dw_view = dw_df.copy()
 if not dw_view.empty and "date" in dw_view.columns:
     dw_view["date"] = pd.to_datetime(dw_view["date"], errors="coerce")
     dw_view = dw_view.sort_values("date", ascending=False)
     dw_view["date"] = dw_view["date"].dt.strftime("%Y-%m-%d")
-
-st.dataframe(dw_view, use_container_width=True)
-
+st.dataframe(dw_view, use_container_width=True, hide_index=True)
