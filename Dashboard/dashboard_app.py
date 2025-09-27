@@ -48,23 +48,54 @@ def load_points_df():
 
     time_keys = ["timestamp", "updated_at", "updatedAt", "created_at", "createdAt", "ts", "time", "date"]
 
-    for d in docs:
-        user_id = d.get("user_id") or d.get("_id")
-        name    = d.get("name") or str(user_id)
-        points  = d.get("points", 0)
+    # ตรวจว่าคอลเลกชันเป็น per-user-doc หรือ map-style
+    doc0 = docs[0]
+    looks_like_per_user = ("name" in doc0 and "points" in doc0) or ("user_id" in doc0)
 
-        ts_val = None
-        for k in time_keys:
-            if k in d and d[k] is not None:
-                ts_val = d[k]
-                break
+    if looks_like_per_user:
+        # เอกสารละคน
+        for d in docs:
+            user_id = d.get("user_id") or d.get("_id")
+            name    = d.get("name") or str(user_id)
+            points  = d.get("points", 0)
 
-        rows.append({
-            "user_id": str(user_id),
-            "name": name,
-            "points": points,
-            "ts": ts_val
-        })
+            ts_val = None
+            for k in time_keys:
+                if d.get(k) is not None:
+                    ts_val = d.get(k); break
+
+            rows.append({"user_id": str(user_id), "name": name, "points": points, "ts": ts_val})
+    else:
+        # map-style: แต่ละเอกสารมีหลาย user อยู่ข้างใน (เช่น d["data"][<userId>] = {name, points})
+        for d in docs:
+            # เวลาเอกสาร (ใช้เป็น timestamp ล่าสุดของชุดนี้)
+            parent_ts = None
+            for k in time_keys:
+                if d.get(k) is not None:
+                    parent_ts = d.get(k); break
+
+            # โหนดข้อมูล: ถ้ามีฟิลด์ data ใช้อันนั้น ไม่งั้น loop ทุก key ยกเว้น _id
+            candidates = d.get("data", d)
+
+            if isinstance(candidates, dict):
+                for k, v in candidates.items():
+                    if k == "_id": 
+                        continue
+                    if isinstance(v, dict) and ("points" in v or "name" in v):
+                        # ถ้าโหนดย่อยมี timestamp ของตัวเอง ให้ใช้ตัวนั้นก่อน
+                        ts_val = None
+                        for tkey in time_keys:
+                            if v.get(tkey) is not None:
+                                ts_val = v.get(tkey); break
+                        if ts_val is None:
+                            ts_val = parent_ts
+
+                        rows.append({
+                            "user_id": str(k),
+                            "name": v.get("name", str(k)),
+                            "points": v.get("points", 0),
+                            "ts": ts_val
+                        })
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -73,6 +104,7 @@ def load_points_df():
     df["points"] = pd.to_numeric(df["points"], errors="coerce").fillna(0).astype(int)
     df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
     return df
+
 
 def load_daily_waste_flat():
     docs = list(daily_col.find({}).sort("timestamp", -1))
@@ -99,17 +131,23 @@ st.subheader("🏆 Total Points by User (from smartbin.points)")
 
 users_df = load_points_df()
 
+users_df = load_points_df()
+
 if not users_df.empty:
+    key_col = "user_id"
     if users_df["ts"].notna().any():
+        # เลือกเรคคอร์ด "ล่าสุดจริง ๆ" ต่อ user
         users_df = (users_df
-                    .sort_values(["user_id", "ts"], ascending=[True, False])
-                    .groupby("user_id", as_index=False)
+                    .sort_values([key_col, "ts"], ascending=[True, False])
+                    .groupby(key_col, as_index=False)
                     .first())
     else:
+        # ถ้าไม่มีเวลาเลย คง fallback เป็นคะแนนมากสุด
         users_df = (users_df
-                    .sort_values(["user_id", "points"], ascending=[True, False])
-                    .groupby("user_id", as_index=False)
+                    .sort_values([key_col, "points"], ascending=[True, False])
+                    .groupby(key_col, as_index=False)
                     .first())
+
 
 # filter Alice
 users_df = users_df[~users_df["name"].fillna("").str.strip().str.lower().eq("alice")]
