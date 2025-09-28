@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from pymongo import MongoClient
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
 st.set_page_config(page_title="Smartbin Dashboard (MongoDB)", layout="wide")
@@ -34,7 +34,6 @@ def get_client():
 
 client = get_client()
 db = client[dbnm]
-
 points_col = db["points"]
 daily_col  = db["daily_waste"]
 
@@ -90,74 +89,79 @@ def load_points_df():
     return df
 
 def load_daily_waste_flat():
-    # อ่านเอกสารเรียงจากใหม่ไปเก่า
     docs = list(daily_col.find({}).sort("timestamp", -1))
     rows = []
-
     time_keys = ["timestamp", "updated_at", "updatedAt", "created_at", "createdAt", "ts", "time", "date"]
-
     for d in docs:
-        # เวลาของเอกสาร (ใช้ชี้ว่าอันไหนล่าสุด)
         parent_ts = None
         for k in time_keys:
             if d.get(k) is not None:
                 parent_ts = d.get(k)
                 break
-
         data = d.get("data", {}) or {}
         for day_str, obj in data.items():
             rows.append({
-                "date": day_str,  # YYYY-MM-DD
+                "date": day_str,
                 "aluminium_can": float(obj.get("aluminium_can", 0) or 0),
                 "plastic_bottle": float(obj.get("plastic_bottle", 0) or 0),
                 "total": float(obj.get("total", 0) or 0),
                 "ts": parent_ts,
             })
-
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-
-    # มาตรฐานรูปแบบวัน/เวลา
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
     df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
-
-    # เก็บแค่เรคคอร์ดล่าสุดของแต่ละวัน (เลือก ts มากสุด)
     if df["ts"].notna().any():
         idx = df.groupby("date")["ts"].idxmax()
         df = df.loc[idx]
     else:
-        # ถ้าไม่มีเวลาเลย ให้คัดซ้ำด้วยลำดับอ่าน (ใหม่→เก่า)
         df = df.drop_duplicates(subset=["date"], keep="first")
-
-    # เรียงจากวันใหม่ไปเก่า และแสดงวันที่เป็นสตริง
     df = df.sort_values("date", ascending=False).reset_index(drop=True)
     df["date"] = df["date"].astype(str)
-
-    # ไม่ต้องโชว์คอลัมน์ ts ในตาราง
     return df.drop(columns=["ts"], errors="ignore")
 
+@st.cache_data(ttl=30)
+def get_users_df_cached():
+    return load_points_df()
 
-users_df = load_points_df()
+@st.cache_data(ttl=30)
+def get_daily_df_cached():
+    return load_daily_waste_flat()
+
+left, mid, right = st.columns([1,1,1])
+with left:
+    dark = st.toggle("Dark mode", value=False)
+with mid:
+    if st.button("🔄 Refresh data"):
+        st.rerun()
+with right:
+    pass
+
+users_df = get_users_df_cached()
 if not users_df.empty:
     key_col = "user_id"
     if users_df["ts"].notna().any():
-        users_df = (users_df
-                    .sort_values([key_col, "ts"], ascending=[True, False])
-                    .groupby(key_col, as_index=False)
-                    .first())
+        users_df = (users_df.sort_values([key_col, "ts"], ascending=[True, False]).groupby(key_col, as_index=False).first())
     else:
-        users_df = (users_df
-                    .sort_values([key_col, "points"], ascending=[True, False])
-                    .groupby(key_col, as_index=False)
-                    .first())
+        users_df = (users_df.sort_values([key_col, "points"], ascending=[True, False]).groupby(key_col, as_index=False).first())
 
 users_df = users_df[~users_df["name"].fillna("").str.strip().str.lower().eq("alice")]
 
-chart_df = (users_df
-            .rename(columns={"name": "User", "points": "Points"})
-            .sort_values("Points", ascending=False)
-            .reset_index(drop=True))
+chart_df = (users_df.rename(columns={"name": "User", "points": "Points"}).sort_values("Points", ascending=False).reset_index(drop=True))
+
+last_ts = users_df["ts"].max() if ("ts" in users_df and not users_df.empty) else None
+c1, c2, c3 = st.columns(3)
+with c1: st.metric("Total Users", len(users_df))
+with c2: st.metric("Total Points", int(chart_df["Points"].sum()) if not chart_df.empty else 0)
+with c3: st.metric("Last Update", last_ts.strftime("%Y-%m-%d %H:%M UTC") if pd.notna(last_ts) else "-")
+
+chart_color = "#14b8a6" if dark else "#16a34a"
+scheme_name = "tealblues" if dark else "greens"
+
+st.subheader("🏅 Leaderboard")
+top_n = st.slider("Top N users", 3, max(3, len(chart_df)) if len(chart_df) >= 3 else 3, min(5, len(chart_df)) if len(chart_df) >= 5 else len(chart_df))
+orient = st.radio("Chart orientation", ["Vertical", "Horizontal"], horizontal=True, index=0)
 
 def badge_for_rank(i: int) -> str:
     if i == 0: return "👑"
@@ -167,49 +171,55 @@ def badge_for_rank(i: int) -> str:
 
 chart_df["Rank"]  = chart_df.index + 1
 chart_df["Badge"] = chart_df.index.map(badge_for_rank)
+chart_df_top = chart_df.head(top_n)
 
-bars = alt.Chart(chart_df).mark_bar(
-    cornerRadiusTopLeft=6, cornerRadiusTopRight=6
-).encode(
-    x=alt.X("User:N", sort=None, title="User"),
-    y=alt.Y("Points:Q", title="Points"),
-    color=alt.value("#16a34a"),
-    tooltip=[alt.Tooltip("User:N"), alt.Tooltip("Points:Q", format=",.0f")]
-).properties(height=420)
+if orient == "Vertical":
+    bars = alt.Chart(chart_df_top).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
+        x=alt.X("User:N", sort=None, title="User"),
+        y=alt.Y("Points:Q", title="Points"),
+        color=alt.value(chart_color),
+        tooltip=[alt.Tooltip("User:N"), alt.Tooltip("Points:Q", format=",.0f")]
+    ).properties(height=420)
+    badges = alt.Chart(chart_df_top[chart_df_top["Badge"] != ""]).mark_text(size=44, dy=-28).encode(
+        x="User:N", y="Points:Q", text="Badge:N"
+    )
+else:
+    bars = alt.Chart(chart_df_top).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
+        y=alt.Y("User:N", sort="-x", title="User"),
+        x=alt.X("Points:Q", title="Points"),
+        color=alt.value(chart_color),
+        tooltip=[alt.Tooltip("User:N"), alt.Tooltip("Points:Q", format=",.0f")]
+    ).properties(height=420)
+    badges = alt.Chart(chart_df_top[chart_df_top["Badge"] != ""]).mark_text(size=44, dx=18).encode(
+        y="User:N", x="Points:Q", text="Badge:N"
+    )
 
-labels = alt.Chart(chart_df).mark_text(
-    dy=-8,
-    fontWeight=600
-).encode(
-    x="User:N",
-    y="Points:Q",
-    text=alt.Text("Points:Q", format=",.0f")
-)
-
-badges = alt.Chart(chart_df[chart_df["Badge"] != ""]).mark_text(
-    size=44, dy=-28
-).encode(
-    x="User:N",
-    y="Points:Q",
-    text="Badge:N"
-)
-
-st.altair_chart((bars + labels + badges).properties(width='container'), use_container_width=True)
+st.altair_chart((bars + badges).properties(width='container'), use_container_width=True)
 
 st.subheader("👤 Users latest points")
 st.dataframe(chart_df[["User", "Points"]], use_container_width=True, hide_index=True)
 
-st.subheader("🗑️ Waste Type Distribution (from smartbin.daily_waste)")
-dw_df = load_daily_waste_flat()
+st.download_button("⬇️ Download Users CSV",
+                   data=users_df.to_csv(index=False).encode("utf-8"),
+                   file_name="users_points.csv",
+                   mime="text/csv")
 
-# สรุปจำนวนต่อชนิด
+st.subheader("🗑️ Waste Type Distribution (from smartbin.daily_waste)")
+dw_all = get_daily_df_cached()
+if not dw_all.empty:
+    min_d, max_d = pd.to_datetime(dw_all["date"]).min(), pd.to_datetime(dw_all["date"]).max()
+    d1, d2 = st.date_input("เลือกช่วงวันที่", (min_d.date(), max_d.date()))
+    if isinstance(d1, tuple):
+        d1, d2 = d1
+    mask = (pd.to_datetime(dw_all["date"]) >= pd.to_datetime(d1)) & (pd.to_datetime(dw_all["date"]) <= pd.to_datetime(d2))
+    dw_df = dw_all.loc[mask].reset_index(drop=True)
+else:
+    dw_df = dw_all
+
 if not dw_df.empty:
     pie_df = pd.DataFrame({
         "Waste": ["aluminium_can", "plastic_bottle"],
-        "TotalAmount": [
-            dw_df["aluminium_can"].sum(),
-            dw_df["plastic_bottle"].sum()
-        ]
+        "TotalAmount": [dw_df["aluminium_can"].sum(), dw_df["plastic_bottle"].sum()]
     })
 else:
     pie_df = pd.DataFrame({"Waste": [], "TotalAmount": []})
@@ -220,14 +230,13 @@ pie_df["PercentText"] = pie_df["Percent"].round(1).astype(str) + "%"
 pie_df["Label"] = pie_df.apply(lambda r: f'{int(r["TotalAmount"]):,} ({r["Percent"]:.1f}%)', axis=1)
 
 col1, col2 = st.columns([2, 1])
-
 with col1:
     base = alt.Chart(pie_df).encode(
         theta=alt.Theta("TotalAmount:Q", stack=True),
-        color=alt.Color("Waste:N", scale=alt.Scale(scheme="greens"))
+        color=alt.Color("Waste:N", scale=alt.Scale(scheme=scheme_name))
     )
-    pie = base.mark_arc()
-    text = base.mark_text(radius=120, size=14).encode(text="Label:N")   # จำนวน + %
+    pie = base.mark_arc(innerRadius=60)
+    text = base.mark_text(radius=135, size=13).encode(text="Label:N")
     st.altair_chart((pie + text).properties(width='container'), use_container_width=True)
 
 with col2:
@@ -236,8 +245,23 @@ with col2:
     table_df["Total"] = table_df["TotalAmount"].astype(int).map(lambda x: f"{x:,}")
     st.table(table_df[["Waste", "Total", "PercentText"]])
 
+st.subheader("📈 Daily Trend")
+if not dw_df.empty:
+    trend_df = dw_df.melt(id_vars=["date"], value_vars=["aluminium_can","plastic_bottle"], var_name="Type", value_name="Amount")
+    line = alt.Chart(trend_df).mark_line(point=True).encode(
+        x=alt.X("date:T", title="Date"),
+        y=alt.Y("Amount:Q"),
+        color=alt.Color("Type:N", title="Waste Type"),
+        tooltip=["date:T","Type:N","Amount:Q"]
+    ).properties(height=360)
+    st.altair_chart(line.properties(width='container'), use_container_width=True)
 
 st.subheader("📋 Daily Waste")
-dw_view = load_daily_waste_flat()
+dw_view = dw_df.copy()
 st.dataframe(dw_view, use_container_width=True, hide_index=True)
 
+if not dw_view.empty:
+    st.download_button("⬇️ Download Daily Waste CSV",
+                       data=dw_view.to_csv(index=False).encode("utf-8"),
+                       file_name="daily_waste.csv",
+                       mime="text/csv")
